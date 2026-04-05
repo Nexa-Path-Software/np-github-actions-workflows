@@ -160,14 +160,22 @@ jobs:
           role-to-assume: ${{ steps.config.outputs.management_role_arn }}
           role-session-name: gha-management-${{ github.run_id }}
 
-      - name: Assume target account execution role
-        if: steps.config.outputs.use_management_role_directly != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ steps.config.outputs.aws_region }}
-          role-to-assume: ${{ steps.config.outputs.target_role_arn }}
-          role-chaining: true
-          role-session-name: gha-target-${{ github.run_id }}
+      - name: Export Terraform runtime variables
+        shell: bash
+        env:
+          AWS_REGION_VALUE: ${{ steps.config.outputs.aws_region }}
+          ENVIRONMENT_NAME: ${{ steps.config.outputs.environment_name }}
+          TARGET_ROLE_ARN: ${{ steps.config.outputs.target_role_arn }}
+          USE_MANAGEMENT_ROLE_DIRECTLY: ${{ steps.config.outputs.use_management_role_directly }}
+        run: |
+          echo "TF_VAR_aws_region=$AWS_REGION_VALUE" >> "$GITHUB_ENV"
+          echo "TF_VAR_environment=$ENVIRONMENT_NAME" >> "$GITHUB_ENV"
+
+          if [ "$USE_MANAGEMENT_ROLE_DIRECTLY" = "true" ]; then
+            echo "TF_VAR_deployment_role_arn=" >> "$GITHUB_ENV"
+          else
+            echo "TF_VAR_deployment_role_arn=$TARGET_ROLE_ARN" >> "$GITHUB_ENV"
+          fi
 
       - name: Terraform fmt
         working-directory: ${{ steps.config.outputs.working_directory }}

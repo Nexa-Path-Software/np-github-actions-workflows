@@ -61,8 +61,9 @@ environments:
 3. Determina el ambiente usando la rama.
 4. Exporta variables de entorno desde el YAML.
 5. Asume el rol hub por OIDC.
-6. Encadena `AssumeRole` hacia la cuenta destino.
-7. Ejecuta `terraform init`, `plan` y `apply`.
+6. Mantiene el backend remoto con credenciales de management.
+7. Exporta `TF_VAR_deployment_role_arn` para que el provider Terraform asuma la cuenta destino.
+8. Ejecuta `terraform init`, `plan` y `apply`.
 
 ## Que hace el reusable workflow de CloudFormation
 
