@@ -1,0 +1,214 @@
+name: Terraform Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Ruta del archivo YAML de despliegue dentro del repo caller.
+        required: false
+        type: string
+        default: .github/deploy.yml
+      terraform-version:
+        description: Version por defecto de Terraform si el YAML no define una.
+        required: false
+        type: string
+        default: 1.8.5
+      apply-on-push:
+        description: Si es true, hace apply automatico en eventos push.
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  terraform:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v6.0.1
+
+      - name: Resolve deployment settings
+        id: config
+        shell: bash
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+          DEFAULT_TERRAFORM_VERSION: ${{ inputs.terraform-version }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+          require "json"
+
+          def required_value(hash, key, path)
+            value = hash[key]
+            raise "#{path}.#{key} is required" if value.nil? || value.to_s.strip.empty?
+            value
+          end
+
+          config_path = ENV.fetch("CONFIG_PATH")
+          raise "Deployment config not found: #{config_path}" unless File.exist?(config_path)
+
+          config = YAML.safe_load(File.read(config_path), permitted_classes: [], aliases: false)
+          raise "Deployment config must be a YAML object" unless config.is_a?(Hash)
+
+          branch_map = config.fetch("branch_environment_map")
+          raise "branch_environment_map must be an object" unless branch_map.is_a?(Hash)
+
+          target_ref = ENV["GITHUB_BASE_REF"].to_s.empty? ? ENV.fetch("GITHUB_REF_NAME") : ENV["GITHUB_BASE_REF"]
+          environment_name = branch_map[target_ref]
+          raise "No environment mapped for branch '#{target_ref}' in #{config_path}" if environment_name.to_s.strip.empty?
+
+          environments = config.fetch("environments")
+          raise "environments must be an object" unless environments.is_a?(Hash)
+
+          environment_config = environments.fetch(environment_name)
+          raise "environments.#{environment_name} must be an object" unless environment_config.is_a?(Hash)
+
+          aws_config = config.fetch("aws", {})
+          terraform_config = config.fetch("terraform", {})
+          backend_config = terraform_config.fetch("backend", {})
+          env_vars = environment_config.fetch("env", {})
+
+          raise "aws must be an object" unless aws_config.is_a?(Hash)
+          raise "terraform must be an object" unless terraform_config.is_a?(Hash)
+          raise "terraform.backend must be an object" unless backend_config.is_a?(Hash)
+          raise "environments.#{environment_name}.env must be an object" unless env_vars.is_a?(Hash)
+
+          account_id = required_value(environment_config, "account_id", "environments.#{environment_name}").to_s
+          aws_region = environment_config["aws_region"].to_s
+          aws_region = aws_config["region"].to_s if aws_region.empty?
+          aws_region = "us-east-1" if aws_region.empty?
+
+          management_role_arn = required_value(aws_config, "management_role_arn", "aws").to_s
+          execution_role_name = environment_config["execution_role_name"].to_s
+          execution_role_name = aws_config["execution_role_name"].to_s if execution_role_name.empty?
+          execution_role_name = "NexaPathGitHubActionsExecutionRole" if execution_role_name.empty?
+
+          target_role_arn = environment_config["execution_role_arn"].to_s
+          target_role_arn = "arn:aws:iam::#{account_id}:role/#{execution_role_name}" if target_role_arn.empty?
+
+          working_directory = terraform_config["working_directory"].to_s
+          working_directory = "terraform" if working_directory.empty?
+
+          terraform_version = terraform_config["version"].to_s
+          terraform_version = ENV.fetch("DEFAULT_TERRAFORM_VERSION") if terraform_version.empty?
+
+          state_key = environment_config["state_key"].to_s
+          state_key = "#{ENV.fetch('GITHUB_REPOSITORY')}/#{environment_name}.tfstate" if state_key.empty?
+
+          use_management_role_directly = environment_config["use_management_role_directly"]
+          use_management_role_directly = false if use_management_role_directly.nil?
+          use_management_role_directly = use_management_role_directly.to_s.downcase == "true" unless use_management_role_directly == true || use_management_role_directly == false
+
+          outputs = {
+            "environment_name" => environment_name.to_s,
+            "account_id" => account_id,
+            "aws_region" => aws_region,
+            "management_role_arn" => management_role_arn,
+            "target_role_arn" => target_role_arn,
+            "working_directory" => working_directory,
+            "terraform_version" => terraform_version,
+            "state_bucket" => backend_config["bucket"].to_s,
+            "state_lock_table" => backend_config["dynamodb_table"].to_s,
+            "state_kms_key_arn" => backend_config["kms_key_arn"].to_s,
+            "state_region" => backend_config["region"].to_s.empty? ? aws_region : backend_config["region"].to_s,
+            "state_key" => state_key,
+            "environment_vars_json" => JSON.generate(env_vars),
+            "use_management_role_directly" => use_management_role_directly ? "true" : "false"
+          }
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |file|
+            outputs.each do |key, value|
+              file.puts("#{key}<<__VALUE__")
+              file.puts(value.to_s)
+              file.puts("__VALUE__")
+            end
+          end
+          RUBY
+
+      - name: Export environment variables from YAML
+        shell: bash
+        env:
+          ENV_VARS_JSON: ${{ steps.config.outputs.environment_vars_json }}
+        run: |
+          ruby <<'RUBY'
+          require "json"
+
+          env_vars = JSON.parse(ENV.fetch("ENV_VARS_JSON"))
+          File.open(ENV.fetch("GITHUB_ENV"), "a") do |file|
+            env_vars.each do |key, value|
+              next if value.nil?
+
+              file.puts("#{key}<<__ENV__")
+              file.puts(value.to_s)
+              file.puts("__ENV__")
+            end
+          end
+          RUBY
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.config.outputs.terraform_version }}
+
+      - name: Assume management hub role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ steps.config.outputs.aws_region }}
+          role-to-assume: ${{ steps.config.outputs.management_role_arn }}
+          role-session-name: gha-management-${{ github.run_id }}
+
+      - name: Assume target account execution role
+        if: steps.config.outputs.use_management_role_directly != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ steps.config.outputs.aws_region }}
+          role-to-assume: ${{ steps.config.outputs.target_role_arn }}
+          role-chaining: true
+          role-session-name: gha-target-${{ github.run_id }}
+
+      - name: Terraform fmt
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        shell: bash
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        env:
+          STATE_BUCKET: ${{ steps.config.outputs.state_bucket }}
+          STATE_LOCK_TABLE: ${{ steps.config.outputs.state_lock_table }}
+          STATE_KMS_KEY_ARN: ${{ steps.config.outputs.state_kms_key_arn }}
+          STATE_REGION: ${{ steps.config.outputs.state_region }}
+          STATE_KEY: ${{ steps.config.outputs.state_key }}
+        run: |
+          args=()
+
+          if [ -n "$STATE_BUCKET" ] && [ -n "$STATE_LOCK_TABLE" ]; then
+            args+=("-backend-config=bucket=$STATE_BUCKET")
+            args+=("-backend-config=dynamodb_table=$STATE_LOCK_TABLE")
+            args+=("-backend-config=region=$STATE_REGION")
+            args+=("-backend-config=key=$STATE_KEY")
+
+            if [ -n "$STATE_KMS_KEY_ARN" ]; then
+              args+=("-backend-config=kms_key_id=$STATE_KMS_KEY_ARN")
+            fi
+
+            terraform init "${args[@]}"
+          else
+            terraform init
+          fi
+
+      - name: Terraform validate
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        if: github.event_name == 'push' && inputs.apply-on-push
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        run: terraform apply -auto-approve tfplan

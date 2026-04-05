@@ -1,0 +1,102 @@
+name: CloudFormation Bootstrap Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Ruta del archivo YAML de bootstrap dentro del repo caller.
+        required: false
+        type: string
+        default: .github/bootstrap.yml
+
+jobs:
+  bootstrap:
+    name: CloudFormation Bootstrap
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v6.0.1
+
+      - name: Resolve bootstrap settings
+        id: config
+        shell: bash
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          ruby <<'RUBY'
+          require "yaml"
+
+          def required_value(hash, key, path)
+            value = hash[key]
+            raise "#{path}.#{key} is required" if value.nil? || value.to_s.strip.empty?
+            value
+          end
+
+          config_path = ENV.fetch("CONFIG_PATH")
+          raise "Bootstrap config not found: #{config_path}" unless File.exist?(config_path)
+
+          config = YAML.safe_load(File.read(config_path), permitted_classes: [], aliases: false)
+          raise "Bootstrap config must be a YAML object" unless config.is_a?(Hash)
+
+          aws_config = config.fetch("aws")
+          cloudformation_config = config.fetch("cloudformation")
+
+          raise "aws must be an object" unless aws_config.is_a?(Hash)
+          raise "cloudformation must be an object" unless cloudformation_config.is_a?(Hash)
+
+          outputs = {
+            "aws_region" => required_value(aws_config, "region", "aws").to_s,
+            "management_role_arn" => required_value(aws_config, "management_role_arn", "aws").to_s,
+            "stack_name" => required_value(cloudformation_config, "stack_name", "cloudformation").to_s,
+            "template_file" => required_value(cloudformation_config, "template_file", "cloudformation").to_s,
+            "packaged_template_file" => required_value(cloudformation_config, "packaged_template_file", "cloudformation").to_s,
+            "parameters_file" => required_value(cloudformation_config, "parameters_file", "cloudformation").to_s,
+            "package_bucket" => required_value(cloudformation_config, "package_bucket", "cloudformation").to_s,
+            "package_prefix" => cloudformation_config["package_prefix"].to_s.empty? ? "cloudformation-artifacts" : cloudformation_config["package_prefix"].to_s
+          }
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |file|
+            outputs.each do |key, value|
+              file.puts("#{key}<<__VALUE__")
+              file.puts(value.to_s)
+              file.puts("__VALUE__")
+            end
+          end
+          RUBY
+
+      - name: Assume management hub role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ steps.config.outputs.aws_region }}
+          role-to-assume: ${{ steps.config.outputs.management_role_arn }}
+          role-session-name: gha-bootstrap-${{ github.run_id }}
+
+      - name: Package CloudFormation template
+        run: |
+          aws cloudformation package \
+            --template-file "${{ steps.config.outputs.template_file }}" \
+            --s3-bucket "${{ steps.config.outputs.package_bucket }}" \
+            --s3-prefix "${{ steps.config.outputs.package_prefix }}" \
+            --output-template-file "${{ steps.config.outputs.packaged_template_file }}"
+
+      - name: Deploy bootstrap stack
+        shell: bash
+        run: |
+          mapfile -t param_array < <(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' "${{ steps.config.outputs.parameters_file }}")
+
+          aws cloudformation deploy \
+            --template-file "${{ steps.config.outputs.packaged_template_file }}" \
+            --stack-name "${{ steps.config.outputs.stack_name }}" \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${param_array[@]}"
+
+      - name: Show stack outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "${{ steps.config.outputs.stack_name }}" \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' \
+            --output table
