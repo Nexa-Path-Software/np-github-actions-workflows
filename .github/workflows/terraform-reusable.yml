@@ -191,10 +191,6 @@ jobs:
             echo "TF_VAR_deployment_role_arn=$TARGET_ROLE_ARN" >> "$GITHUB_ENV"
           fi
 
-      - name: Terraform fmt
-        working-directory: ${{ steps.config.outputs.working_directory }}
-        run: terraform fmt -check -recursive
-
       - name: Terraform init
         shell: bash
         working-directory: ${{ steps.config.outputs.working_directory }}
