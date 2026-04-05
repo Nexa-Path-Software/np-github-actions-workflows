@@ -65,6 +65,8 @@ environments:
 7. Exporta `TF_VAR_deployment_role_arn` para que el provider Terraform asuma la cuenta destino.
 8. Ejecuta `terraform init`, `plan` y `apply`.
 
+El `apply` automatico se habilita solo cuando el caller le pasa `caller-event-name: ${{ github.event_name }}` y el valor real es `push`.
+
 ## Que hace el reusable workflow de CloudFormation
 
 1. Hace checkout del repo caller.

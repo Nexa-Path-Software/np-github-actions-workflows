@@ -13,8 +13,18 @@ on:
         required: false
         type: string
         default: 1.8.5
+      caller-event-name:
+        description: Evento original del workflow caller.
+        required: false
+        type: string
+        default: workflow_dispatch
       apply-on-push:
         description: Si es true, hace apply automatico en eventos push.
+        required: false
+        type: boolean
+        default: true
+      apply-on-workflow-dispatch:
+        description: Si es true, hace apply cuando el caller se lanza manualmente.
         required: false
         type: boolean
         default: true
@@ -217,6 +227,6 @@ jobs:
         run: terraform plan -out=tfplan
 
       - name: Terraform apply
-        if: github.event_name == 'push' && inputs.apply-on-push
+        if: (inputs.caller-event-name == 'push' && inputs.apply-on-push) || (inputs.caller-event-name == 'workflow_dispatch' && inputs.apply-on-workflow-dispatch)
         working-directory: ${{ steps.config.outputs.working_directory }}
         run: terraform apply -auto-approve tfplan
