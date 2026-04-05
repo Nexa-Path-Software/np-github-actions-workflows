@@ -108,6 +108,9 @@ jobs:
           state_key = environment_config["state_key"].to_s
           state_key = "#{ENV.fetch('GITHUB_REPOSITORY')}/#{environment_name}.tfstate" if state_key.empty?
 
+          tfvars_file = environment_config["tfvars_file"].to_s
+          tfvars_file = "environments/#{environment_name}/terraform.tfvars" if tfvars_file.empty?
+
           use_management_role_directly = environment_config["use_management_role_directly"]
           use_management_role_directly = false if use_management_role_directly.nil?
           use_management_role_directly = use_management_role_directly.to_s.downcase == "true" unless use_management_role_directly == true || use_management_role_directly == false
@@ -125,6 +128,7 @@ jobs:
             "state_kms_key_arn" => backend_config["kms_key_arn"].to_s,
             "state_region" => backend_config["region"].to_s.empty? ? aws_region : backend_config["region"].to_s,
             "state_key" => state_key,
+            "tfvars_file" => tfvars_file,
             "environment_vars_json" => JSON.generate(env_vars),
             "use_management_role_directly" => use_management_role_directly ? "true" : "false"
           }
@@ -223,10 +227,20 @@ jobs:
         run: terraform validate
 
       - name: Terraform plan
+        shell: bash
         working-directory: ${{ steps.config.outputs.working_directory }}
-        run: terraform plan -out=tfplan
+        env:
+          TFVARS_FILE: ${{ steps.config.outputs.tfvars_file }}
+        run: |
+          if [ ! -f "$TFVARS_FILE" ]; then
+            echo "Missing tfvars file: $TFVARS_FILE"
+            exit 1
+          fi
+
+          terraform plan -var-file="$TFVARS_FILE" -out=tfplan
 
       - name: Terraform apply
         if: (inputs.caller-event-name == 'push' && inputs.apply-on-push) || (inputs.caller-event-name == 'workflow_dispatch' && inputs.apply-on-workflow-dispatch)
+        shell: bash
         working-directory: ${{ steps.config.outputs.working_directory }}
         run: terraform apply -auto-approve tfplan

@@ -45,11 +45,13 @@ environments:
   dev:
     account_id: "<account>"
     state_key: my-service/dev.tfstate
+    tfvars_file: environments/dev/terraform.tfvars
     env:
       TF_VAR_environment: dev
   prod:
     account_id: "<account>"
     state_key: my-service/prod.tfstate
+    tfvars_file: environments/prod/terraform.tfvars
     env:
       TF_VAR_environment: prod
 ```
@@ -63,7 +65,8 @@ environments:
 5. Asume el rol hub por OIDC.
 6. Mantiene el backend remoto con credenciales de management.
 7. Exporta `TF_VAR_deployment_role_arn` para que el provider Terraform asuma la cuenta destino.
-8. Ejecuta `terraform init`, `plan` y `apply`.
+8. Toma el `tfvars_file` del ambiente, por defecto `environments/<ambiente>/terraform.tfvars`.
+9. Ejecuta `terraform init`, `plan` y `apply`.
 
 El `apply` automatico se habilita solo cuando el caller le pasa `caller-event-name: ${{ github.event_name }}` y el valor real es `push`.
 
