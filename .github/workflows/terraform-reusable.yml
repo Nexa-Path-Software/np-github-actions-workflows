@@ -105,6 +105,8 @@ jobs:
           terraform_version = terraform_config["version"].to_s
           terraform_version = ENV.fetch("DEFAULT_TERRAFORM_VERSION") if terraform_version.empty?
 
+          prepare_command = terraform_config["prepare_command"].to_s
+
           state_key = environment_config["state_key"].to_s
           state_key = "#{ENV.fetch('GITHUB_REPOSITORY')}/#{environment_name}.tfstate" if state_key.empty?
 
@@ -123,6 +125,7 @@ jobs:
             "target_role_arn" => target_role_arn,
             "working_directory" => working_directory,
             "terraform_version" => terraform_version,
+            "prepare_command" => prepare_command,
             "state_bucket" => backend_config["bucket"].to_s,
             "state_lock_table" => backend_config["dynamodb_table"].to_s,
             "state_kms_key_arn" => backend_config["kms_key_arn"].to_s,
@@ -190,6 +193,15 @@ jobs:
           else
             echo "TF_VAR_deployment_role_arn=$TARGET_ROLE_ARN" >> "$GITHUB_ENV"
           fi
+
+      - name: Run prepare command
+        if: steps.config.outputs.prepare_command != ''
+        shell: bash
+        working-directory: ${{ steps.config.outputs.working_directory }}
+        env:
+          PREPARE_COMMAND: ${{ steps.config.outputs.prepare_command }}
+        run: |
+          bash -lc "$PREPARE_COMMAND"
 
       - name: Terraform init
         shell: bash
